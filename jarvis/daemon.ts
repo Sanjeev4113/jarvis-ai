@@ -24,6 +24,7 @@ import { ollamaUp, providers, streamChat, type FnTool, type Msg } from "../src/l
 import { DSA, dayFor } from "../src/content/dsa";
 import { news } from "../src/lib/hub/news";
 import { jobs } from "../src/lib/hub/jobs";
+import { readState, writeState } from "../src/lib/hub/stateStore";
 
 const ROOT = process.cwd();
 const DRY = process.argv.includes("--dry");
@@ -79,13 +80,24 @@ function saveMe() {
   if (!me.pairCode && disk.pairCode) me.pairCode = disk.pairCode;
   writeFileSync(ME, JSON.stringify(me), { mode: 0o600 });
 }
-const hub = (): Hub =>
-  readJson<Hub>(HUB, { updatedAt: 0, tasks: [], timetable: null, reminders: [], dsa: { start: "", solved: {} }, jobs: { saved: [], applied: {}, hidden: [] }, settings: { workHours: "09:30-18:30" }, focus: {} });
+// the hub state is shared with the website (private cloud store when configured, else .data/hub.json); refreshed each tick
+const EMPTY: Hub = { updatedAt: 0, tasks: [], timetable: null, reminders: [], dsa: { start: "", solved: {} }, jobs: { saved: [], applied: {}, hidden: [] }, settings: { workHours: "09:30-18:30" }, focus: {} };
+let hubCache: Hub = readJson<Hub>(HUB, EMPTY);
+async function refreshHub() {
+  const raw = await readState().catch(() => null);
+  if (!raw) return;
+  try {
+    const h = { ...EMPTY, ...(JSON.parse(raw) as Hub) };
+    if (h.updatedAt >= hubCache.updatedAt) hubCache = h;
+  } catch {}
+}
+const hub = (): Hub => hubCache;
 function editHub(fn: (h: Hub) => void) {
-  const h = hub();
+  const h = structuredClone(hubCache);
   fn(h);
   h.updatedAt = Date.now();
-  writeFileSync(HUB, JSON.stringify(h), { mode: 0o600 });
+  hubCache = h;
+  void writeState(JSON.stringify(h));
 }
 const today = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 const hm = (d = new Date()) => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
@@ -526,6 +538,7 @@ async function main() {
   let lastInbox = 0;
   const tick = async () => {
     refreshEnv();
+    await refreshHub();
     if (TG && !polling) {
       polling = true;
       log("telegram connected from the hub");
@@ -544,6 +557,7 @@ async function main() {
       await checkInbox();
     }
   };
+  await refreshHub();
   if (DRY) {
     // one-shot preview: print the brief and the report, then exit
     await brief();

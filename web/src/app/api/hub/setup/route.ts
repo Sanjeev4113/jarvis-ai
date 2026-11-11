@@ -57,7 +57,8 @@ export async function GET() {
   if (!(await currentOwner())) return Response.json({ error: "unauthorised" }, { status: 401 });
   const up = await ollamaUp();
   const me = readMe();
-  if (!me.pairCode) Object.assign(me, await writeMe({ pairCode: String(randomInt(100000, 999999)) }));
+  // the pairing code lives next to the daemon on the Mac; read-only hosting (Vercel) just skips it
+  if (!me.pairCode && canWrite()) Object.assign(me, await writeMe({ pairCode: String(randomInt(100000, 999999)) }).catch(() => ({})));
   const tg = process.env.TELEGRAM_BOT_TOKEN ? await telegramBot(process.env.TELEGRAM_BOT_TOKEN) : null;
   let heartbeat = 0;
   try {
@@ -142,6 +143,7 @@ export async function POST(req: Request) {
   const j = (await r?.json().catch(() => null)) as { ok?: boolean; result?: { update_id: number; message?: { chat: { id: number }; text?: string } }[] } | null;
   const hit = j?.result?.find((u) => u.message?.text?.trim() === `/start ${me.pairCode}`);
   if (!hit?.message) return Response.json({ ok: true, linked: false, detail: "Not yet: open the bot link, press Start, then tap “Link my Telegram” again." });
+  if (!canWrite()) return Response.json({ ok: true, linked: false, detail: "Telegram linking happens on your Mac (the daemon runs there): open the hub locally, or just run npm run jarvis and send /start <code>." });
   await writeMe({ chatId: hit.message.chat.id, offset: hit.update_id + 1 });
   await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: "POST",

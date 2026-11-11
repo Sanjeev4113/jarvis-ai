@@ -32,13 +32,27 @@ PLIST
 }
 
 if [ "${1:-}" = "remove" ]; then
-  for l in com.sanjeev.jarvis com.sanjeev.jarvis-agent; do
+  for l in com.sanjeev.jarvis com.sanjeev.jarvis-agent com.sanjeev.ollama-origins; do
     launchctl bootout "gui/$(id -u)/$l" 2>/dev/null || true
     rm -f "$LA/$l.plist"
     echo "✓ removed $l"
   done
   exit 0
 fi
+
+# let the live portfolio talk to Ollama on this Mac (private JARVIS brain from the browser); re-applied at every login
+cat > "$LA/com.sanjeev.ollama-origins.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.sanjeev.ollama-origins</string>
+  <key>ProgramArguments</key><array><string>/bin/sh</string><string>-c</string><string>launchctl setenv OLLAMA_ORIGINS "https://sanjeev-sudarsanam.vercel.app,https://sanjeev-portfolio-three.vercel.app" &amp;&amp; /opt/homebrew/bin/brew services restart ollama</string></array>
+  <key>RunAtLoad</key><true/>
+</dict></plist>
+PLIST
+launchctl bootout "gui/$(id -u)/com.sanjeev.ollama-origins" 2>/dev/null || true
+launchctl bootstrap "gui/$(id -u)" "$LA/com.sanjeev.ollama-origins.plist"
+echo "✓ Ollama accepts the live site"
 
 plist com.sanjeev.jarvis "$NODE" "$DIR/node_modules/tsx/dist/cli.mjs" --env-file-if-exists=.env.local jarvis/daemon.ts
 plist com.sanjeev.jarvis-agent "$NODE" "$DIR/jarvis/agent.mjs"

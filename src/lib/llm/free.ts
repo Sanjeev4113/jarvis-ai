@@ -92,8 +92,10 @@ export async function streamChat(opts: {
   maxTokens?: number;
   temperature?: number;
   task?: "chat" | "long";
-  /** Contains private data: only providers behind the owner's own free account (Groq, Gemini, OpenRouter). */
+  /** Contains private data: only providers behind the owner's own free account (Groq, Gemini, OpenRouter) or Ollama. */
   sensitive?: boolean;
+  /** Ask for a JSON object (response_format), where the provider supports it. */
+  json?: boolean;
   signal?: AbortSignal;
   onText?: (t: string) => void;
 }): Promise<{ provider: string; text: string; toolCalls: ToolCall[] }> {
@@ -117,8 +119,10 @@ export async function streamChat(opts: {
           ...(opts.tools?.length ? { tools: opts.tools.map((t) => ({ type: "function", function: t })), tool_choice: "auto" } : {}),
           // local reasoning models: skip the slow hidden "thinking" pass
           ...(p.id === "ollama" ? { reasoning_effort: "none" } : {}),
+          ...(opts.json && p.id !== "pollinations" ? { response_format: { type: "json_object" } } : {}),
         }),
-        signal: opts.signal ?? AbortSignal.timeout(90_000),
+        // long jobs (resume tailoring on the local model) get 5 minutes; chat gets 90 s before the next provider
+        signal: opts.signal ?? AbortSignal.timeout(opts.task === "long" ? 300_000 : 90_000),
       });
       if (!res.ok || !res.body) throw new Error(`${p.id} ${res.status} ${(await res.text().catch(() => "")).slice(0, 200)}`);
       const reader = res.body.getReader();
@@ -184,11 +188,13 @@ export async function streamChat(opts: {
 }
 
 /** Ask for JSON matching a JSON Schema; parse and validate with `parse` (e.g. a Zod schema's safeParse). Retries once. */
-export async function chatJson<T>(opts: { system: string; user: string; schema: object; parse: (x: unknown) => { success: true; data: T } | { success: false; error: { message: string } }; maxTokens?: number; task?: "chat" | "long" }): Promise<T> {
+export async function chatJson<T>(opts: { system: string; user: string; schema: object; parse: (x: unknown) => { success: true; data: T } | { success: false; error: { message: string } }; maxTokens?: number; task?: "chat" | "long"; sensitive?: boolean }): Promise<T> {
   let feedback = "";
   for (let attempt = 0; attempt < 2; attempt++) {
     const { text } = await streamChat({
       task: opts.task,
+      sensitive: opts.sensitive,
+      json: true,
       maxTokens: opts.maxTokens ?? 4000,
       temperature: 0.2,
       messages: [

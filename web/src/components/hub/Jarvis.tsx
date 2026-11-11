@@ -7,6 +7,7 @@ import { emit, local, on, sessionExpired, setLocal, snapshot, today, uid, update
 import { DSA, dayFor } from "@/content/dsa";
 import { say as speakOut, stopSpeaking, warmVoice } from "@/lib/hub/jvoice";
 import { enableLlm, getLlm, llmChat, llmSupported } from "@/lib/llm/onDevice";
+import { localBrainUp, localChat } from "@/lib/hub/localBrain";
 import Md from "./Md";
 import TalkMode from "./TalkMode";
 import s from "./Jarvis.module.css";
@@ -201,6 +202,35 @@ export default function Jarvis({ open, onClose, tab }: { open: boolean; onClose:
       setBusy(true);
       abort.current = new AbortController();
       const ctx = context(hubRef.current, tab, !!agent);
+      // private brain on this Mac, straight from the browser, when the server only has the public model
+      const runLocal = async () => {
+        let full = "";
+        const cards: Card[] = [];
+        await localChat({
+          history: history.filter((m) => m.content).map((m) => ({ role: m.role, content: m.content })),
+          context: ctx,
+          signal: abort.current?.signal,
+          onText: (d) => {
+            full += d;
+            opts.onDelta?.(d);
+            setMsgs((ms) => ms.map((m) => (m.id === reply.id ? { ...m, content: full } : m)));
+          },
+          onTool: (name, args) => {
+            const c = runTool(name, args);
+            if (c) cards.push(c);
+            setMsgs((ms) => ms.map((m) => (m.id === reply.id ? { ...m, cards: [...cards] } : m)));
+          },
+        });
+        if (!full && !cards.length) full = "Done.";
+        setMsgs((ms) => ms.map((m) => (m.id === reply.id ? { ...m, content: full } : m)));
+        setProvider("Ollama · on your Mac (direct)");
+        setMode((md) => ({ ...md, mail: md?.mail ?? false, privateMode: true }));
+        if (!opts.silent && !opts.onDelta) say(full);
+        return full;
+      };
+      try {
+        if (mode && !mode.privateMode && (await localBrainUp())) return await runLocal();
+      } catch {}
       try {
         const r = await fetch("/api/jarvis/chat", {
           method: "POST",
@@ -251,6 +281,9 @@ export default function Jarvis({ open, onClose, tab }: { open: boolean; onClose:
         return full;
       } catch (e) {
         if ((e as Error).name === "AbortError") return "";
+        try {
+          if (await localBrainUp()) return await runLocal();
+        } catch {}
         // last-resort brain: a model running inside this browser (WebGPU), no server needed
         if (llmSupported()) {
           try {
@@ -287,7 +320,7 @@ export default function Jarvis({ open, onClose, tab }: { open: boolean; onClose:
         abort.current = null;
       }
     },
-    [agent, busy, runTool, say, tab],
+    [agent, busy, mode, runTool, say, tab],
   );
 
   // other tabs can hand JARVIS a prompt
