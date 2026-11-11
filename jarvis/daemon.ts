@@ -61,7 +61,7 @@ type Hub = {
   focus: Record<string, number>;
 };
 type Mail = { uid: number; from: string; subject: string; date: string; text: string; urgent: boolean; why?: string };
-type Me = { inboxBaseline?: boolean; chatId?: number; pairCode?: string; heartbeat?: number; offset?: number; lastBrief?: string; lastReport?: string; alerted: string[]; mail: Mail[]; seenJobs: string[] };
+type Me = { lastJobai?: number; inboxBaseline?: boolean; chatId?: number; pairCode?: string; heartbeat?: number; offset?: number; lastBrief?: string; lastReport?: string; alerted: string[]; mail: Mail[]; seenJobs: string[] };
 
 mkdirSync(DATA, { recursive: true });
 const readJson = <T>(f: string, fallback: T): T => {
@@ -392,6 +392,33 @@ async function reminders() {
   }
 }
 
+/* ---------- JobAI on this Mac (fallback for, or instead of, GitHub Actions) ---------- */
+
+// JOBAI_RUNNER=github → leave it to GitHub Actions. Anything else → run the hourly job search here (07:00–23:00),
+// which also lets the private local model tailor the resume and Tectonic build the PDFs.
+let jobaiRunning = false;
+function jobaiLocal() {
+  const script = path.join(ROOT, "jobai", "run.ts");
+  if (process.env.JOBAI_RUNNER === "github" || jobaiRunning || DRY) return;
+  try {
+    readFileSync(script);
+  } catch {
+    return; // standalone jarvis-ai repo: JobAI lives elsewhere
+  }
+  const h = new Date().getHours();
+  if (h < 7 || h >= 23 || Date.now() - (me.lastJobai ?? 0) < 60 * 60_000) return;
+  jobaiRunning = true;
+  me.lastJobai = Date.now();
+  saveMe();
+  log("JobAI: hourly search starting on this Mac");
+  const tsx = path.join(ROOT, "node_modules", ".bin", "tsx");
+  execFile(tsx, ["--env-file-if-exists=.env.local", "jobai/run.ts"], { cwd: ROOT, timeout: 30 * 60_000, maxBuffer: 20 * 1024 * 1024 }, (err, stdout) => {
+    jobaiRunning = false;
+    const last = String(stdout).trim().split("\n").slice(-2).join(" · ");
+    log(err ? `JobAI failed: ${err.message.slice(0, 200)}` : `JobAI done: ${last.slice(0, 240)}`);
+  });
+}
+
 /* ---------- Telegram chat ---------- */
 
 me.pairCode ??= String(randomInt(100000, 999999));
@@ -511,6 +538,7 @@ async function main() {
     await reminders().catch(() => null);
     if (now >= BRIEF_AT && me.lastBrief !== t && now < REPORT_AT) await brief().catch((e) => log("brief failed", e.message));
     if (now >= REPORT_AT && me.lastReport !== t) await report().catch((e) => log("report failed", e.message));
+    jobaiLocal();
     if (Date.now() - lastInbox > 15 * 60_000) {
       lastInbox = Date.now();
       await checkInbox();
