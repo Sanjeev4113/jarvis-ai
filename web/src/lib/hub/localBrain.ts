@@ -9,7 +9,11 @@ import { SYSTEM, TOOLS, contextText, type JarvisContext } from "./jarvisBrain";
 const OLLAMA = "http://127.0.0.1:11434";
 let seen: { at: number; ok: boolean } = { at: 0, ok: false };
 
+/** Phones and tablets can't reach the Mac's 127.0.0.1, so don't probe there (it would only trigger a permission prompt). */
+const handheld = () => typeof navigator !== "undefined" && (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent)));
+
 export async function localBrainUp() {
+  if (handheld()) return false;
   if (Date.now() - seen.at < 60_000) return seen.ok;
   try {
     const r = await fetch(`${OLLAMA}/api/tags`, { signal: AbortSignal.timeout(1500) });
