@@ -1,0 +1,110 @@
+.wrap {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: radial-gradient(700px 500px at 50% 42%, rgb(14 165 233 / 0.12), transparent 70%), #03050b;
+  padding: calc(14px + env(safe-area-inset-top)) 16px calc(16px + env(safe-area-inset-bottom));
+  animation: in 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes in {
+  from {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+}
+.top {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.brand {
+  font: 700 12px var(--font-mono), monospace;
+  letter-spacing: 0.3em;
+  color: #bae6fd;
+}
+.engine {
+  flex: 1;
+  min-width: 0;
+  font: 10.5px var(--font-mono), monospace;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.close {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: 1px solid rgb(248 113 113 / 0.5);
+  background: rgb(248 113 113 / 0.12);
+  color: #fecaca;
+  font-size: 15px;
+  cursor: pointer;
+}
+.orbBtn {
+  flex: 1;
+  width: 100%;
+  min-height: 240px;
+  max-height: 460px;
+  border: 0;
+  padding: 0;
+  background: none;
+  cursor: pointer;
+}
+.orb {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.state {
+  margin: 0 0 10px;
+  font: 600 12px var(--font-mono), monospace;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: #7dd3fc;
+}
+.state[data-phase="thinking"] {
+  color: #c4b5fd;
+}
+.state[data-phase="paused"] {
+  color: var(--dim);
+}
+.lines {
+  width: 100%;
+  max-width: 560px;
+  min-height: 110px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  text-align: center;
+}
+.heard {
+  margin: 0;
+  color: var(--dim);
+  font-size: 14px;
+  font-style: italic;
+}
+.reply {
+  margin: 0;
+  color: #e0f2fe;
+  font-size: 16px;
+  line-height: 1.55;
+  max-height: 30vh;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(transparent, #000 30%);
+  mask-image: linear-gradient(transparent, #000 30%);
+}
+.note {
+  margin: 0;
+  font-size: 12px;
+  color: #fde68a;
+}
+.hint {
+  margin: 12px 0 0;
+  font: 11px var(--font-mono), monospace;
+  color: var(--dim);
+}

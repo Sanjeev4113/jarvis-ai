@@ -1,0 +1,27 @@
+{
+  "name": "jarvis-ai",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "JARVIS-AI: a free, private personal agent (voice, planner, alerts, inbox triage, Mac control with approval).",
+  "scripts": {
+    "jarvis": "tsx --env-file-if-exists=.env.local jarvis/daemon.ts",
+    "jarvis:preview": "tsx --env-file-if-exists=.env.local jarvis/daemon.ts --dry",
+    "jarvis:agent": "node jarvis/agent.mjs",
+    "jarvis:autostart": "bash jarvis/autostart.sh",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.7.0",
+    "imapflow": "^2.11.0",
+    "mailparser": "^3.14.3",
+    "nodemailer": "^10.3.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/nodemailer": "^8.0.2",
+    "tsx": "^4.23.15",
+    "typescript": "^5"
+  }
+}
