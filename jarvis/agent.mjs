@@ -29,7 +29,7 @@ const PORT = Number(process.env.JARVIS_PORT || 7777);
 const HOME = os.homedir();
 const DIR = path.join(HOME, ".jarvis");
 const ROOTS = (process.env.JARVIS_FOLDERS || "Documents,Desktop,Downloads").split(",").map((f) => path.resolve(HOME, f.trim()));
-const ORIGINS = new Set((process.env.JARVIS_ORIGINS || "http://localhost:3000,http://127.0.0.1:3000").split(",").map((s) => s.trim().replace(/\/$/, "")));
+const ORIGINS = new Set((process.env.JARVIS_ORIGINS || "http://localhost:3000,http://127.0.0.1:3000,https://sanjeev-portfolio.vercel.app").split(",").map((s) => s.trim().replace(/\/$/, "")));
 const READ_ONLY = new Set(["screenshot", "list_docs", "read_doc", "clipboard_read"]);
 const TEXT_EXT = new Set([".txt", ".md", ".markdown", ".csv", ".tsv", ".json", ".yaml", ".yml", ".xml", ".log", ".tex", ".java", ".ts", ".tsx", ".js", ".mjs", ".py", ".sql", ".sh", ".properties", ".ini", ".toml", ".css", ".html"]);
 const RICH_EXT = new Set([".docx", ".doc", ".rtf", ".rtfd", ".odt", ".webarchive", ".wordml"]);
