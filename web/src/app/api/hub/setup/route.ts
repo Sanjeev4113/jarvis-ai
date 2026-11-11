@@ -122,6 +122,7 @@ export async function POST(req: Request) {
     const res = await save({ TELEGRAM_BOT_TOKEN: b.value }, `Bot @${name} connected. Now tap “Link my Telegram”.`);
     return res;
   }
+
   if (b.kind === "gmail") {
     const user = b.user ?? process.env.GMAIL_USER ?? process.env.VAULT_OWNER_EMAIL ?? "sanjeevsudarsanam@gmail.com";
     const pass = b.value.replace(/\s+/g, "");

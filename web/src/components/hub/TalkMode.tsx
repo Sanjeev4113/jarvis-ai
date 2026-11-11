@@ -11,7 +11,7 @@ type Ask = (text: string, onDelta: (d: string) => void) => Promise<string>;
  * Talk to JARVIS like a call: it listens, answers out loud in a natural voice, then listens again.
  * Tap the orb to interrupt; say "goodbye" or press ✕ to end.
  */
-export default function TalkMode({ ask, onClose }: { ask: Ask; onClose: () => void }) {
+export default function TalkMode({ ask, onClose, intro, firstAsk }: { ask: Ask; onClose: () => void; intro?: string; firstAsk?: string }) {
   const [phase, setPhase] = useState<Phase>("starting");
   const [heard, setHeard] = useState("");
   const [reply, setReply] = useState("");
@@ -79,9 +79,25 @@ export default function TalkMode({ ask, onClose }: { ask: Ask; onClose: () => vo
     const ears = earEngine();
     const h = new Date().getHours();
     const t = setTimeout(async () => {
-      say(`${h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening"}, Sanjeev. I'm listening.`);
+      say(intro ?? `${h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening"}, Sanjeev. I'm listening.`);
       setP("speaking");
       await spoken();
+      if (open.current && firstAsk) {
+        // a call with an agenda (e.g. "your updates"): JARVIS speaks it first, then listens
+        setP("thinking");
+        setReply("");
+        let first = true;
+        await ask(firstAsk, (d) => {
+          if (first) {
+            first = false;
+            setP("speaking");
+          }
+          feed(d);
+          setReply((r) => r + d);
+        }).catch(() => say("I couldn't fetch that right now."));
+        flush();
+        await spoken();
+      }
       if (open.current && ears !== "none") void loop.current();
       else setP("paused");
     }, 250);
@@ -92,6 +108,7 @@ export default function TalkMode({ ask, onClose }: { ask: Ask; onClose: () => vo
       stopSpeaking();
       stopMeters();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the call starts once; its opening line is read once
   }, []);
 
   const tapOrb = () => {

@@ -64,6 +64,8 @@ function context(h: HubState, tab: string, agent: boolean) {
     jobs: snapshot.jobs || undefined,
     agent,
     tab,
+    memory: h.memory.map((m) => m.text).slice(-60),
+    brain: h.settings.brain,
   };
 }
 
@@ -81,6 +83,8 @@ export default function Jarvis({ open, onClose, tab }: { open: boolean; onClose:
   const [handsFree, setHandsFree] = useState(false);
   const [speak, setSpeak] = useState(() => local("jarvis-speak", false));
   const [talk, setTalk] = useState(false);
+  const [talkIntro, setTalkIntro] = useState<string | undefined>();
+  const [talkAsk, setTalkAsk] = useState<string | undefined>();
   const list = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abort = useRef<AbortController | null>(null);
@@ -164,6 +168,20 @@ export default function Jarvis({ open, onClose, tab }: { open: boolean; onClose:
       if (typeof Notification !== "undefined" && Notification.permission === "default") void Notification.requestPermission();
       return { kind: "done", text: `Reminder set for ${at.replace("T", " at ")}: ${a.text}`, undo: () => update((d) => void (d.reminders = d.reminders.filter((r) => r.id !== id))) };
     }
+    if (name === "remember") {
+      const text = String(a.fact ?? "").trim().slice(0, 300);
+      if (!text) return null;
+      const id = uid();
+      update((d) => void (d.memory = [...d.memory.filter((m) => m.text.toLowerCase() !== text.toLowerCase()), { id, text, at: Date.now() }].slice(-100)));
+      return { kind: "done", text: `Remembered: ${text}`, undo: () => update((d) => void (d.memory = d.memory.filter((m) => m.id !== id))) };
+    }
+    if (name === "forget") {
+      const q = String(a.fact ?? "").toLowerCase();
+      const hit = hubRef.current.memory.find((m) => m.text.toLowerCase().includes(q) || q.includes(m.text.toLowerCase()));
+      if (!hit) return { kind: "done", text: `Nothing in memory matches “${a.fact}”.` };
+      update((d) => void (d.memory = d.memory.filter((m) => m.id !== hit.id)));
+      return { kind: "done", text: `Forgot: ${hit.text}`, undo: () => update((d) => void d.memory.push(hit)) };
+    }
     if (name === "plan_day") {
       const blocks = ((Array.isArray(a.blocks) ? a.blocks : []) as Block[]).filter((b) => b && b.start && b.end && b.title).map((b) => ({ start: String(b.start).slice(0, 5), end: String(b.end).slice(0, 5), title: String(b.title).slice(0, 120), kind: String(b.kind ?? "personal") }));
       return { kind: "plan", date: String(a.date ?? today()).slice(0, 10), blocks, note: a.note ? String(a.note) : undefined, state: "pending" };
@@ -228,8 +246,31 @@ export default function Jarvis({ open, onClose, tab }: { open: boolean; onClose:
         if (!opts.silent && !opts.onDelta) say(full);
         return full;
       };
+      const brain = hubRef.current.settings.brain ?? "auto";
+      // the in-browser model, if he picked it
+      const runBrowser = async () => {
+        enableLlm();
+        const t0 = Date.now();
+        while (getLlm().status === "loading" && Date.now() - t0 < 120_000) await new Promise((r) => setTimeout(r, 500));
+        if (getLlm().status !== "ready") throw new Error("The in-browser model needs WebGPU (Chrome or Edge on a recent laptop).");
+        let full = "";
+        await llmChat(
+          [{ role: "system", content: "You are JARVIS, Sanjeev's helpful assistant, running inside his browser (no tools). Answer briefly." }, ...history.filter((m) => m.content && !m.hidden).slice(-8).map((m) => ({ role: m.role, content: m.content }))],
+          (d) => {
+            full += d;
+            opts.onDelta?.(d);
+            setMsgs((ms) => ms.map((m) => (m.id === reply.id ? { ...m, content: full } : m)));
+          },
+          { maxTokens: 600 },
+        );
+        setProvider("in-browser model");
+        if (!opts.onDelta) say(full);
+        return full;
+      };
       try {
-        if (mode && !mode.privateMode && (await localBrainUp())) return await runLocal();
+        if (brain === "browser" && llmSupported()) return await runBrowser();
+        const serverHasOllama = !!mode?.brains?.some((b) => /ollama/i.test(b));
+        if ((brain === "ollama" && !serverHasOllama) || (mode && !mode.privateMode && (brain === "auto" || brain === "ollama"))) if (await localBrainUp()) return await runLocal();
       } catch {}
       try {
         const r = await fetch("/api/jarvis/chat", {
@@ -328,6 +369,12 @@ export default function Jarvis({ open, onClose, tab }: { open: boolean; onClose:
     () =>
       on((e) => {
         if (e.type !== "jarvis") return;
+        if (e.talk) {
+          setTalkIntro(e.intro);
+          setTalkAsk(e.ask);
+          setTalk(true);
+          return;
+        }
         if (e.send) void ask(e.prompt);
         else {
           setInput(e.prompt);
@@ -728,7 +775,18 @@ export default function Jarvis({ open, onClose, tab }: { open: boolean; onClose:
         <span>Asks before anything major</span>
       </div>
 
-      {talk && open && <TalkMode ask={(text, onDelta) => ask(text, { onDelta })} onClose={() => setTalk(false)} />}
+      {talk && open && (
+        <TalkMode
+          intro={talkIntro}
+          firstAsk={talkAsk}
+          ask={(text, onDelta) => ask(text, { onDelta })}
+          onClose={() => {
+            setTalk(false);
+            setTalkIntro(undefined);
+            setTalkAsk(undefined);
+          }}
+        />
+      )}
     </aside>
   );
 }

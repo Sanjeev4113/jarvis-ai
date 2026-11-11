@@ -3,7 +3,7 @@
  *
  *  - Morning brief (08:00) and nightly report (21:30): plan, tasks, DSA, LeetCode daily, new jobs, inbox, news.
  *  - Alerts only when it matters: reminders as they fall due, urgent mail (interviews, offers, recruiters),
- *    standout job matches. Delivered on Telegram (a free bot), else by email, else as a Mac notification.
+ *    standout job matches. Delivered by email (Gmail app password), else Telegram, else as a Mac notification.
  *  - Chat from your phone: message the Telegram bot; only your paired chat is accepted.
  *  - Inbox triage (Gmail via IMAP + app password): reads new mail (without marking it read), flags what's urgent and
  *    drafts replies. Nothing is ever sent without your tap on "Send".
@@ -25,6 +25,8 @@ import { DSA, dayFor } from "../src/content/dsa";
 import { news } from "../src/lib/hub/news";
 import { jobs } from "../src/lib/hub/jobs";
 import { readState, writeState } from "../src/lib/hub/stateStore";
+import { callNow } from "../src/lib/hub/calls";
+import { claim, tick as cloudTick } from "../src/lib/hub/notify";
 
 const ROOT = process.cwd();
 const DRY = process.argv.includes("--dry");
@@ -39,7 +41,7 @@ function refreshEnv() {
   try {
     for (const line of readFileSync(path.join(ROOT, ".env.local"), "utf8").split("\n")) {
       const m = line.match(/^([A-Z0-9_]+)=(.*)$/);
-      if (m && /^(TELEGRAM_BOT_TOKEN|GMAIL_USER|GMAIL_APP_PASSWORD|GEMINI_API_KEY|GROQ_API_KEY|OPENROUTER_API_KEY|OLLAMA_MODEL|JARVIS_BRIEF_AT|JARVIS_REPORT_AT)$/.test(m[1])) process.env[m[1]] = m[2].trim();
+      if (m && /^(TELEGRAM_BOT_TOKEN|GMAIL_USER|GMAIL_APP_PASSWORD|GEMINI_API_KEY|GROQ_API_KEY|OPENROUTER_API_KEY|OLLAMA_MODEL|JARVIS_BRIEF_AT|JARVIS_REPORT_AT|NEXT_PUBLIC_VAPID_PUBLIC_KEY|VAPID_PRIVATE_KEY|BLOB_READ_WRITE_TOKEN)$/.test(m[1])) process.env[m[1]] = m[2].trim();
     }
   } catch {}
   TG = process.env.TELEGRAM_BOT_TOKEN;
@@ -60,6 +62,8 @@ type Hub = {
   jobs: { saved: string[]; applied: Record<string, { at: string; title: string; company: string; status: string }>; hidden: string[] };
   settings: { workHours: string };
   focus: Record<string, number>;
+  autopilot?: { at: number; mails: { from: string; subject: string; summary: string; urgent: boolean }[]; drafts: { id: string; to: string; subject: string; body: string; status: "pending" | "sent" | "discarded"; about: string }[] } | null;
+  call?: { id: string; at: number; text: string; answered?: boolean } | null;
 };
 type Mail = { uid: number; from: string; subject: string; date: string; text: string; urgent: boolean; why?: string };
 type Me = { lastJobai?: number; inboxBaseline?: boolean; chatId?: number; pairCode?: string; heartbeat?: number; offset?: number; lastBrief?: string; lastReport?: string; alerted: string[]; mail: Mail[]; seenJobs: string[] };
@@ -135,25 +139,51 @@ function macSpeak(text: string) {
   if (process.platform !== "darwin" || h >= 23 || h < 7 || DRY) return;
   execFile("say", ["-v", "Daniel", "-r", "185", `Sanjeev, ${plain(text).slice(0, 220)}`], () => null);
 }
+/** A spoken voice note for Telegram, made with the Mac's built-in voice (free, offline). */
+async function voiceNote(text: string) {
+  if (!TG || !me.chatId || process.platform !== "darwin" || DRY) return;
+  const base = path.join(DATA, `call-${Date.now()}`);
+  try {
+    await new Promise<void>((res, rej) => execFile("say", ["-v", "Daniel", "-r", "180", "-o", `${base}.aiff`, `Sanjeev, ${plain(text).slice(0, 400)}`], (e) => (e ? rej(e) : res())));
+    await new Promise<void>((res, rej) => execFile("afconvert", ["-f", "m4af", "-d", "aac", `${base}.aiff`, `${base}.m4a`], (e) => (e ? rej(e) : res())));
+    const form = new FormData();
+    form.append("chat_id", String(me.chatId));
+    form.append("voice", new Blob([readFileSync(`${base}.m4a`)], { type: "audio/mp4" }), "jarvis.m4a");
+    await fetch(`https://api.telegram.org/bot${TG}/sendVoice`, { method: "POST", body: form, signal: AbortSignal.timeout(30_000) });
+  } catch (e) {
+    log("voice note failed", (e as Error).message);
+  } finally {
+    for (const ext of [".aiff", ".m4a"]) execFile("rm", ["-f", `${base}${ext}`], () => null);
+  }
+}
+
 /** Tell Sanjeev something. `html` uses Telegram's small HTML subset (b, i, a, code). */
 async function tell(title: string, html: string, opts: { urgent?: boolean; buttons?: { text: string; data: string }[][] } = {}) {
   if (DRY) {
     console.log(`\n──── ${title} ────\n${plain(html)}\n`);
     return;
   }
+  if (opts.urgent && !DRY) {
+    // "JARVIS calls you": rings the open hub on every device, and sends a spoken voice note
+    editHub((h) => void (h.call = { id: uid(), at: Date.now(), text: `${title}. ${plain(html).slice(0, 300)}` }));
+    void voiceNote(`${title}. ${html}`);
+    void callNow(`${title}. ${plain(html).slice(0, 200)}`, "note", undefined, false).catch(() => null); // rings the phone
+  }
+  // email first (updates go to Sanjeev's inbox); Telegram for approval buttons, or if mail fails
+  if (GMAIL && !opts.buttons) {
+    try {
+      await sendMail([OWNER], `JARVIS · ${title}`, plain(html), `<div style="font-family:system-ui;line-height:1.6">${html.replace(/\n/g, "<br>")}</div>`);
+      if (opts.urgent) macSpeak(`${title}. ${html}`);
+      return;
+    } catch (e) {
+      log("mail failed", (e as Error).message);
+    }
+  }
   if (TG && me.chatId) {
     if (opts.urgent) macSpeak(`${title}. ${html}`);
     const text = `${opts.urgent ? "🚨 " : ""}<b>${esc(title)}</b>\n\n${html}`.slice(0, 4000);
     const ok = await tg("sendMessage", { chat_id: me.chatId, text, parse_mode: "HTML", disable_web_page_preview: true, ...(opts.buttons ? { reply_markup: { inline_keyboard: opts.buttons.map((row) => row.map((b) => ({ text: b.text, callback_data: b.data }))) } } : {}) });
     if (ok) return;
-  }
-  if (GMAIL && !opts.buttons) {
-    try {
-      await sendMail([OWNER], `JARVIS · ${title}`, plain(html), `<div style="font-family:system-ui;line-height:1.6">${html.replace(/\n/g, "<br>")}</div>`);
-      return;
-    } catch (e) {
-      log("mail failed", (e as Error).message);
-    }
   }
   macNotify(`JARVIS · ${title}`, plain(html));
   if (opts.urgent) macSpeak(`${title}. ${html}`);
@@ -195,6 +225,25 @@ async function checkInbox() {
           urgentNow.push({ from, subject, text, id });
         }
       }
+      // autopilot: summaries of new mail + a reply draft for each important one, waiting for approval in the hub
+      if (!quiet) {
+        const fresh = me.mail.filter((m) => !known.has(m.uid));
+        if (fresh.length) {
+          const drafts: { id: string; to: string; subject: string; body: string; status: "pending"; about: string }[] = [];
+          for (const m of urgentNow.slice(0, 5)) {
+            const d = await drafts_for(m);
+            if (d) drafts.push(d);
+          }
+          editHub((h) => {
+            const prev = h.autopilot ?? { at: 0, mails: [], drafts: [] };
+            h.autopilot = {
+              at: Date.now(),
+              mails: [...fresh.map((m) => ({ from: m.from.replace(/<.*>/, "").trim(), subject: m.subject, summary: m.text.slice(0, 140), urgent: m.urgent })), ...prev.mails].slice(0, 40),
+              drafts: [...drafts.filter(Boolean), ...prev.drafts].slice(0, 30),
+            };
+          });
+        }
+      }
       // at most 3 separate alerts per check; anything beyond goes into one summary
       for (const m of urgentNow.slice(0, 3))
         await tell("Important mail", `From: ${esc(m.from)}\n<b>${esc(m.subject)}</b>\n\n${esc(m.text.slice(0, 500))}…`, { urgent: true, buttons: TG && me.chatId ? [[{ text: "✍️ Draft a reply", data: `draft:${m.id}` }]] : undefined });
@@ -212,6 +261,23 @@ async function checkInbox() {
       await client.close();
     } catch {}
   }
+}
+
+/** Draft a reply for one important mail with the private brain (never sent without approval). */
+function drafts_for(m: { from: string; subject: string; text: string; id: string }) {
+  if (!providers("chat", true).length) return null;
+  const to = m.from.match(/<([^>]+)>/)?.[1] ?? m.from;
+  return streamChat({
+    sensitive: true,
+    maxTokens: 400,
+    temperature: 0.4,
+    messages: [
+      { role: "system", content: "You write short, professional email replies for Sanjeev Sudarsanam (software developer). Reply in his voice, polite and specific. Never invent facts, times or commitments: use [placeholders] for anything he must fill in. Output only the email body, signed 'Best regards,\nSanjeev Sudarsanam'." },
+      { role: "user", content: `Reply to this email.\nFROM: ${m.from}\nSUBJECT: ${m.subject}\n\n${m.text}` },
+    ],
+  })
+    .then((r) => ({ id: m.id, to, subject: m.subject.startsWith("Re:") ? m.subject : `Re: ${m.subject}`, body: r.text.trim(), status: "pending" as const, about: `${m.subject} (${m.from.replace(/<.*>/, "").trim()})` }))
+    .catch(() => null);
 }
 
 /* ---------- brain ---------- */
@@ -323,10 +389,19 @@ async function daily() {
 async function brief() {
   const h = hub();
   const t = today();
+  if (!DRY && !(await claim(`brief:${t}`))) {
+    me.lastBrief = t; // the cloud heartbeat already sent today's brief
+    saveMe();
+    return;
+  }
   const d = dayFor(h.dsa.start || t);
   const lc = await daily();
   const [n, j] = await Promise.all([news().catch(() => null), jobs().catch(() => null)]);
-  const fresh = (j?.list ?? []).filter((x) => !me.seenJobs.includes(x.id) && x.region !== "Global").slice(0, 5);
+  const fresh: NonNullable<typeof j>["list"] = [];
+  for (const x of (j?.list ?? []).filter((x) => !me.seenJobs.includes(x.id) && x.region !== "Global")) {
+    if (fresh.length >= 5) break;
+    if (DRY || (await claim(`job:${x.id}`))) fresh.push(x);
+  }
   if (!DRY) {
     me.seenJobs = [...new Set([...me.seenJobs, ...(j?.list ?? []).map((x) => x.id)])].slice(-3000);
     saveMe();
@@ -344,6 +419,7 @@ async function brief() {
     urgentTasks.length ? `\n<b>Focus tasks</b>\n${urgentTasks.map((x) => `• ${esc(x.title)}${x.due ? ` (due ${x.due})` : ""}`).join("\n")}` : "",
     fresh.length ? `\n<b>New matches</b>\n${fresh.map((x) => `• <a href="${x.url}">${esc(x.title)}</a> · ${esc(x.company)} (${x.ai?.fit ?? x.match}%)`).join("\n")}` : "",
     n?.posts.length ? `\n<b>Tech pulse</b>\n${n.posts.filter((p) => p.kind !== "community").slice(0, 4).map((p) => `• ${esc(p.company)}: <a href="${p.url}">${esc(p.title)}</a>`).join("\n")}` : "",
+    h.autopilot && Date.now() - h.autopilot.at < 18 * 3_600_000 ? `\n<b>While you slept</b>: ${h.autopilot.mails.length} mail triaged, ${h.autopilot.drafts.filter((d) => d.status === "pending").length} reply draft(s) waiting for your OK in the hub's JARVIS tab.` : "",
     me.mail.some((m) => m.urgent) ? `\n<b>Mail that needs you</b>\n${me.mail.filter((m) => m.urgent).slice(-5).map((m) => `• ${esc(m.subject)} · ${esc(m.from.replace(/<.*>/, "").trim())}`).join("\n")}` : "",
   ].filter((l) => l !== "");
   await tell("Morning brief", lines.join("\n"));
@@ -355,6 +431,11 @@ async function brief() {
 async function report() {
   const h = hub();
   const t = today();
+  if (!DRY && !(await claim(`report:${t}`))) {
+    me.lastReport = t;
+    saveMe();
+    return;
+  }
   const done = h.tasks.filter((x) => x.done && x.doneAt && today(new Date(x.doneAt)) === t);
   const solved = Object.entries(h.dsa.solved).filter(([, d]) => d === t).map(([s]) => s);
   const applied = Object.values(h.jobs.applied).filter((a) => a.at.slice(0, 10) === t);
@@ -400,6 +481,7 @@ async function reminders() {
     me.alerted.push(r.id);
     me.alerted = me.alerted.slice(-500);
     saveMe();
+    if (!(await claim(`rem:${r.id}`))) continue; // already sent by the cloud heartbeat
     await tell("⏰ Reminder", esc(r.text), { urgent: true });
   }
 }
@@ -552,6 +634,8 @@ async function main() {
     if (now >= BRIEF_AT && me.lastBrief !== t && now < REPORT_AT) await brief().catch((e) => log("brief failed", e.message));
     if (now >= REPORT_AT && me.lastReport !== t) await report().catch((e) => log("report failed", e.message));
     jobaiLocal();
+    // plan blocks as they start, job openings every 3 h, anything missed, and scheduled phone calls (shared log: no repeats)
+    await cloudTick().catch((e) => log("heartbeat failed", (e as Error).message));
     if (Date.now() - lastInbox > 15 * 60_000) {
       lastInbox = Date.now();
       await checkInbox();

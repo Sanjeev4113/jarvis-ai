@@ -96,12 +96,15 @@ export async function streamChat(opts: {
   sensitive?: boolean;
   /** Ask for a JSON object (response_format), where the provider supports it. */
   json?: boolean;
+  /** Try this provider first (by id: ollama, gemini, groq, openrouter, pollinations); the rest stay as fallbacks. */
+  prefer?: string;
   signal?: AbortSignal;
   onText?: (t: string) => void;
 }): Promise<{ provider: string; text: string; toolCalls: ToolCall[] }> {
   const errors: string[] = [];
   await ollamaUp();
-  const list = providers(opts.task, opts.sensitive);
+  const all = providers(opts.task, opts.sensitive);
+  const list = opts.prefer ? [...all.filter((p) => p.id === opts.prefer), ...all.filter((p) => p.id !== opts.prefer)] : all;
   if (!list.length) throw new Error("This needs a free GEMINI_API_KEY or GROQ_API_KEY (private data is never sent to the anonymous provider).");
   for (const p of list) {
     if (approxTokens(opts.messages) + (opts.maxTokens ?? 1000) > p.maxContext) continue;

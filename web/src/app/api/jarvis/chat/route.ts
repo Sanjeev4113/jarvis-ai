@@ -31,6 +31,8 @@ const Body = z.object({
       jobs: z.string().max(2000).optional(),
       agent: z.boolean().optional(),
       tab: z.string().max(30).optional(),
+      memory: z.array(z.string().max(300)).max(100).optional(),
+      brain: z.string().max(20).optional(),
     })
     .partial({ now: true }),
 });
@@ -67,6 +69,7 @@ export async function POST(req: Request) {
             maxTokens: 1500,
             temperature: 0.4,
             sensitive: privateMode,
+            prefer: c.brain && c.brain !== "auto" ? c.brain : undefined,
             signal: req.signal,
             onText: (t) => send({ type: "text", delta: t }),
           });
