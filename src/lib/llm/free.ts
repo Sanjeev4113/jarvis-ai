@@ -134,6 +134,16 @@ export async function streamChat(opts: {
       let text = "";
       let thinking = false; // reasoning models (qwen3, deepseek-r1) may stream <think>…</think> first: hide it
       const calls: { name: string; args: string }[] = [];
+      // the anonymous model is a reasoning model that sometimes spills its private reasoning into the answer
+      // ("…requirements.User is ready. We need to ask…"): pass text on sentence by sentence and stop at a leak
+      const guard = p.id === "pollinations" && !opts.json ? leakGuard() : null;
+      const emit = (piece: string) => {
+        const out = guard ? guard.push(piece) : piece;
+        if (!out) return;
+        text += out;
+        sent = true;
+        opts.onText?.(out);
+      };
       for (;;) {
         const { value, done } = await reader.read();
         if (done) break;
@@ -166,11 +176,7 @@ export async function streamChat(opts: {
               piece = (d?.content ?? "").slice(end + 8).replace(/^\s+/, "");
             }
           }
-          if (piece && !(text === "" && !piece.trim())) {
-            text += piece;
-            sent = true;
-            opts.onText?.(piece);
-          }
+          if (piece && !(text === "" && !piece.trim())) emit(piece);
           for (const tc of d?.tool_calls ?? []) {
             const i = tc.index ?? calls.length;
             calls[i] ??= { name: "", args: "" };
@@ -179,6 +185,7 @@ export async function streamChat(opts: {
           }
         }
       }
+      if (guard) emit(guard.end());
       if (!text && !calls.length) throw new Error(`${p.id}: empty answer`);
       return { provider: p.label, text, toolCalls: calls.filter((c) => c.name) };
     } catch (e) {
@@ -215,4 +222,54 @@ export async function chatJson<T>(opts: { system: string; user: string; schema: 
     }
   }
   throw new Error("The free model did not return valid JSON.");
+}
+
+/** Leaked reasoning looks like notes to itself, not words to the user. */
+const LEAK = /^(?:assistantfinal|analysis\b|(?:the )?user (?:is|was|wants|asked|says|said|seems|has|just|might|may)\b|we (?:need|should|must|have) to\b|i (?:need|should|must) to (?:ask|respond|answer|reply|say|produce|craft)\b|let's (?:respond|answer|reply|craft|produce|formulate)\b|our (?:response|reply|answer) (?:should|must|will)\b|(?:the )?(?:assistant|system) (?:should|must|needs)\b)/i;
+/** Buffers a stream into sentences; drops everything from the first leaked-reasoning sentence onward. */
+export function leakGuard() {
+  let buf = "";
+  let raw = ""; // everything so far, to spot the "assistantfinal" marker even inside dropped reasoning
+  let finalSeen = false;
+  let stopped = false;
+  const clean = (sentence: string) => {
+    if (stopped) return "";
+    if (LEAK.test(sentence.trim())) {
+      stopped = true;
+      return "";
+    }
+    return sentence;
+  };
+  return {
+    push(piece: string) {
+      if (!finalSeen) {
+        raw += piece;
+        // "assistantfinal" marks where a reasoning model's real answer starts: drop all before it and resume
+        const fin = raw.search(/assistantfinal/i);
+        if (fin >= 0) {
+          finalSeen = true;
+          stopped = false;
+          buf = raw.slice(fin + "assistantfinal".length).replace(/^\s+/, "");
+          raw = "";
+          piece = "";
+        } else if (raw.length > 20000) raw = raw.slice(-200);
+      }
+      buf += piece;
+      let out = "";
+      for (;;) {
+        // a sentence ends at . ! ? … followed by space, a newline, or straight into a capital ("requirements.User")
+        const m = buf.match(/^[\s\S]*?[.!?…](?:\s+|(?=[A-Z]))/);
+        if (!m || m[0].length >= buf.length + 1) break;
+        out += clean(m[0]);
+        buf = buf.slice(m[0].length);
+        if (stopped) break;
+      }
+      return out;
+    },
+    end() {
+      const rest = clean(buf);
+      buf = "";
+      return rest;
+    },
+  };
 }
