@@ -137,13 +137,13 @@ export async function streamChat(opts: {
       // the anonymous model is a reasoning model that sometimes spills its private reasoning into the answer
       // ("…requirements.User is ready. We need to ask…"): pass text on sentence by sentence and stop at a leak
       const guard = p.id === "pollinations" && !opts.json ? leakGuard() : null;
-      const emit = (piece: string) => {
-        const out = guard ? guard.push(piece) : piece;
+      const send = (out: string) => {
         if (!out) return;
         text += out;
         sent = true;
         opts.onText?.(out);
       };
+      const emit = (piece: string) => send(guard ? guard.push(piece) : piece);
       for (;;) {
         const { value, done } = await reader.read();
         if (done) break;
@@ -185,7 +185,7 @@ export async function streamChat(opts: {
           }
         }
       }
-      if (guard) emit(guard.end());
+      if (guard) send(guard.end());
       if (!text && !calls.length) throw new Error(`${p.id}: empty answer`);
       return { provider: p.label, text, toolCalls: calls.filter((c) => c.name) };
     } catch (e) {
