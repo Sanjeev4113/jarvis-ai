@@ -285,15 +285,16 @@ export default function Jarvis({ open, onClose, tab }: { open: boolean; onClose:
         if (!opts.onDelta) say(full);
         return full;
       };
+      // every path (browser brain, the Mac's brain, the server) ends in the `finally` below, which frees the panel
       try {
-        if (brain === "browser" && llmSupported()) return await runBrowser();
-        const serverHasOllama = !!mode?.brains?.some((b) => /ollama/i.test(b));
-        if ((brain === "ollama" && !serverHasOllama) || (mode && !mode.privateMode && (brain === "auto" || brain === "ollama"))) if (await localBrainUp()) return await runLocal();
-      } catch {
+        try {
+          if (brain === "browser" && llmSupported()) return await runBrowser();
+          const serverHasOllama = !!mode?.brains?.some((b) => /ollama/i.test(b));
+          if ((brain === "ollama" && !serverHasOllama) || (mode && !mode.privateMode && (brain === "auto" || brain === "ollama"))) if (await localBrainUp()) return await runLocal();
+        } catch {
+          if (ctl.signal.aborted) return interrupted();
+        }
         if (ctl.signal.aborted) return interrupted();
-      }
-      if (ctl.signal.aborted) return interrupted();
-      try {
         const r = await fetch("/api/jarvis/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
