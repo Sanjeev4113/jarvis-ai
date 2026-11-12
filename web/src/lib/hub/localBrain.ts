@@ -99,3 +99,78 @@ export async function localChat(o: { history: { role: "user" | "assistant"; cont
     convo.push({ role: "assistant", content: `${text}\n[called: ${calls.map((c) => `${c.name}(${c.args.slice(0, 300)})`).join("; ")}]`.trim() }, { role: "user", content: "[system] Those tool calls are done or waiting for Sanjeev's approval. If any part of his request still needs a tool, call it now. Otherwise reply with one short line confirming what was set up." });
   }
 }
+
+/** One structured answer from the Mac's private model, asked exactly like the server asks it (JSON mode, the schema in
+ *  the prompt, no thinking): fast on the local model. Used for resume tailoring. */
+export async function localJson(system: string, user: string, schema: object, signal?: AbortSignal): Promise<unknown> {
+  let feedback = "";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const r = await fetch(`${OLLAMA}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "jarvis",
+        stream: false,
+        temperature: 0.2,
+        max_tokens: 3500,
+        reasoning_effort: "none",
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: `${system}\n\nReply with ONLY a JSON object (no prose, no code fences) that matches this JSON Schema:\n${JSON.stringify(schema)}` },
+          { role: "user", content: user + feedback },
+        ],
+      }),
+      signal: signal ?? AbortSignal.timeout(300_000),
+    });
+    if (!r.ok) throw new Error(`Ollama ${r.status}`);
+    const j = (await r.json()) as { choices?: { message?: { content?: string } }[] };
+    const text = (j.choices?.[0]?.message?.content ?? "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+    try {
+      return JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1));
+    } catch {
+      feedback = "\n\nYour previous reply was not valid JSON. Reply again with a single JSON object only.";
+    }
+  }
+  throw new Error("The model didn't return valid JSON.");
+}
+
+/** A plain streamed chat with the Mac's private model (interview prep coaching for private skills). */
+export async function localStream(system: string, messages: { role: "user" | "assistant"; content: string }[], onText: (t: string) => void, signal?: AbortSignal): Promise<string> {
+  const r = await fetch(`${OLLAMA}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: "jarvis", stream: true, temperature: 0.5, max_tokens: 1800, reasoning_effort: "none", messages: [{ role: "system", content: system }, ...messages] }),
+    signal: signal ?? AbortSignal.timeout(300_000),
+  });
+  if (!r.ok || !r.body) throw new Error(`Ollama ${r.status}`);
+  const reader = r.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  let full = "";
+  let thinking = false;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line.startsWith("data:") || line === "data: [DONE]") continue;
+      try {
+        let d = ((JSON.parse(line.slice(5)) as { choices?: { delta?: { content?: string } }[] }).choices?.[0]?.delta?.content ?? "") as string;
+        if (d.includes("<think>")) thinking = true;
+        if (thinking) {
+          if (!d.includes("</think>")) continue;
+          d = d.split("</think>").pop() ?? "";
+          thinking = false;
+        }
+        if (d) {
+          full += d;
+          onText(d);
+        }
+      } catch {}
+    }
+  }
+  return full;
+}

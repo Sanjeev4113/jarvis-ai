@@ -108,3 +108,44 @@
   font: 11px var(--font-mono), monospace;
   color: var(--dim);
 }
+.controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 12px 18px;
+  margin-top: 14px;
+  min-height: 44px;
+}
+.stop {
+  min-width: 132px;
+  min-height: 44px;
+  padding: 0 22px;
+  border: 1px solid rgb(248 113 113 / 0.55);
+  border-radius: 999px;
+  background: rgb(248 113 113 / 0.14);
+  color: #fecaca;
+  font: 600 15px var(--font-sans, system-ui), sans-serif;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+.stop:hover {
+  background: rgb(248 113 113 / 0.24);
+}
+.stop:focus-visible {
+  outline: 2px solid #fca5a5;
+  outline-offset: 3px;
+}
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--dim);
+  cursor: pointer;
+}
+.toggle input {
+  width: 18px;
+  height: 18px;
+  accent-color: #38bdf8;
+}

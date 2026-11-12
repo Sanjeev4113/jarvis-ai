@@ -5,7 +5,7 @@ import { agentAct, agentConfig, agentStatus, saveAgent, type AgentStatus } from 
 import { PRIVATE_MARK } from "@/lib/hub/shared";
 import { emit, local, on, sessionExpired, setLocal, snapshot, today, uid, update, useHub, type Block, type HubState } from "@/lib/hub/store";
 import { DSA, dayFor } from "@/content/dsa";
-import { say as speakOut, stopSpeaking, warmVoice } from "@/lib/hub/jvoice";
+import { onSpeaking, say as speakOut, stopSpeaking, warmVoice } from "@/lib/hub/jvoice";
 import { enableLlm, getLlm, llmChat, llmSupported } from "@/lib/llm/onDevice";
 import { localBrainUp, localChat } from "@/lib/hub/localBrain";
 import Md from "./Md";
@@ -88,6 +88,13 @@ export default function Jarvis({ open, onClose, tab }: { open: boolean; onClose:
   const list = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abort = useRef<AbortController | null>(null);
+  const [talking, setTalking] = useState(false); // JARVIS is speaking out loud
+  useEffect(() => onSpeaking(setTalking), []);
+  /** Stop everything right now: the answer being written and the voice. */
+  const stopAll = useCallback(() => {
+    abort.current?.abort();
+    stopSpeaking();
+  }, []);
   const rec = useRef<SR | null>(null);
   const msgsRef = useRef<Msg[]>([]);
   const hubRef = useRef(hub);
@@ -194,6 +201,10 @@ export default function Jarvis({ open, onClose, tab }: { open: boolean; onClose:
       emit({ type: "nav", tab: String(a.tab ?? "home"), query: a.query ? String(a.query) : undefined });
       return null;
     }
+    if (name === "interview_prep") {
+      emit({ type: "prep", skill: String(a.skill ?? "company-intel"), company: a.company ? String(a.company) : undefined, role: a.role ? String(a.role) : undefined });
+      return null;
+    }
     if (name === "teach_dsa") {
       const day = Math.min(DSA.length, Math.max(1, Number(a.day) || 1));
       emit({ type: "lesson", day });
@@ -218,7 +229,14 @@ export default function Jarvis({ open, onClose, tab }: { open: boolean; onClose:
       setMsgs([...history, reply]);
       setInput("");
       setBusy(true);
-      abort.current = new AbortController();
+      stopSpeaking();
+      const ctl = new AbortController();
+      abort.current = ctl;
+      // stopped mid-answer: keep what was said, and tell the model it was cut off so a correction makes sense
+      const interrupted = () => {
+        setMsgs((ms) => ms.map((m) => (m.id === reply.id ? { ...m, content: `${m.content ? `${m.content} …` : ""}\n\n_(Sanjeev stopped me here.)_` } : m)));
+        return "";
+      };
       const ctx = context(hubRef.current, tab, !!agent);
       // private brain on this Mac, straight from the browser, when the server only has the public model
       const runLocal = async () => {
@@ -227,7 +245,7 @@ export default function Jarvis({ open, onClose, tab }: { open: boolean; onClose:
         await localChat({
           history: history.filter((m) => m.content).map((m) => ({ role: m.role, content: m.content })),
           context: ctx,
-          signal: abort.current?.signal,
+          signal: ctl.signal,
           onText: (d) => {
             full += d;
             opts.onDelta?.(d);
@@ -271,7 +289,10 @@ export default function Jarvis({ open, onClose, tab }: { open: boolean; onClose:
         if (brain === "browser" && llmSupported()) return await runBrowser();
         const serverHasOllama = !!mode?.brains?.some((b) => /ollama/i.test(b));
         if ((brain === "ollama" && !serverHasOllama) || (mode && !mode.privateMode && (brain === "auto" || brain === "ollama"))) if (await localBrainUp()) return await runLocal();
-      } catch {}
+      } catch {
+        if (ctl.signal.aborted) return interrupted();
+      }
+      if (ctl.signal.aborted) return interrupted();
       try {
         const r = await fetch("/api/jarvis/chat", {
           method: "POST",
@@ -283,7 +304,7 @@ export default function Jarvis({ open, onClose, tab }: { open: boolean; onClose:
               .map((m) => ({ role: m.role, content: m.content })),
             context: ctx,
           }),
-          signal: abort.current.signal,
+          signal: ctl.signal,
         });
         if (r.status === 401) sessionExpired();
         if (!r.ok || !r.body) throw new Error(r.status === 401 ? "Your session expired. Opening the vault…" : `JARVIS is offline (${r.status}).`);
@@ -321,7 +342,7 @@ export default function Jarvis({ open, onClose, tab }: { open: boolean; onClose:
         if (!opts.silent && !opts.onDelta) say(full);
         return full;
       } catch (e) {
-        if ((e as Error).name === "AbortError") return "";
+        if ((e as Error).name === "AbortError" || ctl.signal.aborted) return interrupted();
         try {
           if (await localBrainUp()) return await runLocal();
         } catch {}
@@ -358,7 +379,7 @@ export default function Jarvis({ open, onClose, tab }: { open: boolean; onClose:
         return "";
       } finally {
         setBusy(false);
-        abort.current = null;
+        if (abort.current === ctl) abort.current = null;
       }
     },
     [agent, busy, mode, runTool, say, tab],
@@ -758,8 +779,8 @@ export default function Jarvis({ open, onClose, tab }: { open: boolean; onClose:
           rows={1}
           maxLength={8000}
         />
-        {busy ? (
-          <button type="button" className={s.send} onClick={() => abort.current?.abort()}>
+        {busy || talking ? (
+          <button type="button" className={s.send} onClick={stopAll} aria-label={busy ? "Stop answering" : "Stop talking"} title="Stop">
             ■
           </button>
         ) : (
@@ -780,6 +801,7 @@ export default function Jarvis({ open, onClose, tab }: { open: boolean; onClose:
           intro={talkIntro}
           firstAsk={talkAsk}
           ask={(text, onDelta) => ask(text, { onDelta })}
+          cancel={() => abort.current?.abort()}
           onClose={() => {
             setTalk(false);
             setTalkIntro(undefined);

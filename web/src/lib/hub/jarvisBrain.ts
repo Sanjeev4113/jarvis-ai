@@ -20,7 +20,8 @@ export type JarvisContext = {
   brain?: string;
 };
 
-const TABS = ["home", "feed", "jobs", "learn", "practice", "tracks", "skills", "planner", "resume"] as const;
+const TABS = ["home", "feed", "jobs", "learn", "practice", "interview", "tracks", "upskill", "planner", "resume", "setup", "jarvis"] as const;
+const PREP = ["company-intel", "mock-interview", "oa-sim", "pattern-coach", "core-viva", "system-design", "hr-round", "defend-project", "roast-resume", "resume-blueprint", "jd-match", "github-glowup", "make-hireable", "referral-dm", "prep-plan", "rejection-review", "offer-decode", "profile"] as const;
 const COMPUTER = ["screenshot", "list_docs", "read_doc", "open_url", "open_app", "notify", "create_reminder", "create_event", "clipboard_read", "clipboard_write", "run_shortcut"] as const;
 
 export const TOOLS: FnTool[] = [
@@ -108,6 +109,11 @@ export const TOOLS: FnTool[] = [
     parameters: { type: "object", properties: { tab: { type: "string", enum: [...TABS] }, query: { type: "string" } }, required: ["tab"] },
   },
   {
+    name: "interview_prep",
+    description: "Open an interview-prep skill, pre-filled: company-intel (rounds, values, most-reported questions), mock-interview (timed DSA round with an AI interviewer), oa-sim (timed online assessment), pattern-coach, core-viva (OS/DBMS/CN/OOP/SQL), system-design, hr-round (STAR + story bank), defend-project, roast-resume, resume-blueprint, jd-match, github-glowup, make-hireable, referral-dm, prep-plan, rejection-review, offer-decode, profile (journal).",
+    parameters: { type: "object", properties: { skill: { type: "string", enum: [...PREP] }, company: { type: "string" }, role: { type: "string" } }, required: ["skill"] },
+  },
+  {
     name: "teach_dsa",
     description: "Open the DSA lesson for a day of the 30-day path (and its practice problems) while you teach it.",
     parameters: { type: "object", properties: { day: { type: "number", description: "1-30" } }, required: ["day"] },
@@ -138,7 +144,7 @@ WHAT YOU DO
 - Mail: draft_email for anything to send. You never send mail yourself; he presses Send.
 - Computer (Mac agent): use the computer tool to see his screen, find or read his documents, open apps/links, create reminders/events. Every computer action shows him an approval card first.
 - Teacher: teach DSA Socratically. Explain the intuition with a tiny example, then the pattern, then time/space complexity, then ask him to try; give hints before full solutions; when he shares code, review it like a senior engineer (correctness, edge cases, complexity). Use teach_dsa to open the day's lesson. Prefer Java for code (he also knows TypeScript).
-- Career coach: interview prep, resume and job strategy for his targets.
+- Career coach: interview prep, resume and job strategy for his targets. For practice, open the right skill with interview_prep (e.g. "mock interview me for Amazon" → mock-interview with company Amazon; "roast my resume" → roast-resume). Never help during a live interview or assessment: offer a debrief afterwards.
 
 RULES
 - Major actions (sending, deleting, overwriting, touching the computer) always go through a tool that asks him first. Never claim something is done before a tool result confirms it.

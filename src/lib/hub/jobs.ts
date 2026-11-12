@@ -20,6 +20,7 @@ export type ListedJob = {
   url: string;
   source: string;
   posted?: string;
+  postedDay?: boolean;
   role: Role;
   match: number;
   hits: string[];
@@ -40,6 +41,17 @@ function role(t: string): Role {
 
 const COMPANY_NAMES: Record<string, string> = { mongodb: "MongoDB", gitlab: "GitLab", openai: "OpenAI", cred: "CRED", paytm: "Paytm", servicenow: "ServiceNow" };
 const nice = (c: string) => COMPANY_NAMES[c.toLowerCase()] ?? (c === c.toLowerCase() ? c.replace(/\b\w/g, (x) => x.toUpperCase()) : c);
+
+/** Every source dates its posts differently ("2026-11-10T13:22:11-05:00", "November 10, 2026", epoch seconds…):
+ *  one exact UTC ISO timestamp, so "newest first" and "posted within" compare real times. Future dates are clamped. */
+export function postedAt(p?: string | number): string | undefined {
+  if (p === undefined || p === null || p === "") return undefined;
+  const s = String(p).trim();
+  const n = /^\d{10}$/.test(s) ? Number(s) * 1000 : /^\d{13}$/.test(s) ? Number(s) : Date.parse(s);
+  if (!Number.isFinite(n) || n < Date.parse("2015-01-01")) return undefined;
+  return new Date(Math.min(n, Date.now())).toISOString();
+}
+export const postedMs = (j: { posted?: string }) => (j.posted ? Date.parse(j.posted) || 0 : 0);
 
 function aiFits() {
   const f = path.join(process.cwd(), "jobai", "state", "state.json");
@@ -117,7 +129,8 @@ async function load(): Promise<Cache> {
       remote: j.remote,
       url: j.url,
       source: j.source,
-      posted: j.posted,
+      posted: postedAt(j.posted),
+      postedDay: j.postedDay,
       role: role(j.title),
       // quick match: keywords, place, and how recently it was posted
       match: Math.min(99, Math.round(kw.score * 0.6 + loc * 10 + (years <= 2 ? 8 : 0) + (j.description ? 0 : 10))),
@@ -131,6 +144,7 @@ async function load(): Promise<Cache> {
     if (prev) {
       // same role in many cities: keep one entry, list the places
       if (!prev.location.includes(item.location)) prev.location = `${prev.location}; ${item.location}`.slice(0, 160);
+      if (postedMs(item) > postedMs(prev)) prev.posted = item.posted; // the newest copy decides "posted"
       continue;
     }
     byKey.set(k, item);
@@ -142,14 +156,15 @@ async function load(): Promise<Cache> {
     for (const [name, re] of SKILLS) if (re.test(text)) demandMap.set(name, (demandMap.get(name) ?? 0) + 1);
   }
   const demand = [...demandMap].map(([skill, n]) => ({ skill, jobs: n })).sort((a, b) => b.jobs - a.jobs);
-  const list = [...byKey.values()].sort((a, b) => (b.ai?.fit ?? b.match) - (a.ai?.fit ?? a.match) || (b.posted ?? "").localeCompare(a.posted ?? ""));
+  const list = [...byKey.values()].sort((a, b) => (b.ai?.fit ?? b.match) - (a.ai?.fit ?? a.match) || postedMs(b) - postedMs(a));
   const c: Cache = { at: Date.now(), list, full, counts, total: jobs.length, demand, described: [...full.values()].filter((j) => j.description.length > 200).length };
   cache = c;
   return c;
 }
 
 export async function jobs(force = false): Promise<Cache> {
-  if (cache && !force && Date.now() - cache.at < 60 * 60_000) return cache;
+  if (force && cache && Date.now() - cache.at < 90_000) force = false; // a rescan within 90 s returns the fresh list
+  if (cache && !force && Date.now() - cache.at < 30 * 60_000) return cache;
   loading ??= load().finally(() => (loading = null));
   if (cache && !force) return cache;
   return loading;

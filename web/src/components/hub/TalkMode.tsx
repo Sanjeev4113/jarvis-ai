@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { earEngine, feed, flush, levels, listenOnce, neuralState, say, spoken, startMeters, stopListening, stopMeters, stopSpeaking, voiceEngine, warmVoice, whisperProgress } from "@/lib/hub/jvoice";
+import { earEngine, ensureMic, feed, flush, levels, listenOnce, neuralState, say, spoken, startMeters, stopListening, stopMeters, stopSpeaking, voiceEngine, warmVoice, whisperProgress } from "@/lib/hub/jvoice";
 import s from "./TalkMode.module.css";
 
 type Phase = "starting" | "listening" | "thinking" | "speaking" | "paused";
@@ -9,10 +9,21 @@ type Ask = (text: string, onDelta: (d: string) => void) => Promise<string>;
 
 /**
  * Talk to JARVIS like a call: it listens, answers out loud in a natural voice, then listens again.
- * Tap the orb to interrupt; say "goodbye" or press ✕ to end.
+ * Interrupt any time: start talking over it, tap the orb, press Stop (or Space/Esc). The answer stops at once (the
+ * model stops too) and JARVIS listens, so you can correct it. Say "goodbye" or press ✕ to end.
  */
-export default function TalkMode({ ask, onClose, intro, firstAsk }: { ask: Ask; onClose: () => void; intro?: string; firstAsk?: string }) {
+export default function TalkMode({ ask, cancel, onClose, intro, firstAsk }: { ask: Ask; cancel: () => void; onClose: () => void; intro?: string; firstAsk?: string }) {
   const [phase, setPhase] = useState<Phase>("starting");
+  const [cutIn, setCutIn] = useState(false); // "you interrupted: go ahead"
+  const [bargeIn, setBargeIn] = useState(() => {
+    try {
+      return localStorage.getItem("jarvis-barge-in") !== "0";
+    } catch {
+      return true;
+    }
+  });
+  const bargeRef = useRef(bargeIn);
+  const turn = useRef(0); // every answer has a number; anything from an older one is ignored
   const [heard, setHeard] = useState("");
   const [reply, setReply] = useState("");
   const [note] = useState(() => (earEngine() === "whisper" ? "Using on-device Whisper for listening (first time downloads ~80 MB)." : earEngine() === "none" ? "This browser can't listen. Use the text box instead." : ""));
@@ -24,13 +35,54 @@ export default function TalkMode({ ask, onClose, intro, firstAsk }: { ask: Ask; 
     setPhase(p);
   };
 
-  /* ---------- conversation loop ---------- */
+  /* ---------- one answer: streamed, spoken, and stoppable ---------- */
+  const answer = useCallback(
+    async (text: string) => {
+      const my = ++turn.current;
+      setP("thinking");
+      setReply("");
+      let first = true;
+      try {
+        await ask(text, (d) => {
+          if (turn.current !== my) return; // interrupted: drop the rest
+          if (first) {
+            first = false;
+            setP("speaking");
+          }
+          feed(d);
+          setReply((r) => r + d);
+        });
+      } catch {
+        if (turn.current === my) say("Sorry, I lost my connection for a moment.");
+      }
+      if (turn.current !== my) return;
+      flush();
+      if (phaseRef.current !== "speaking") setP("speaking");
+      await spoken();
+    },
+    [ask],
+  );
+
+  /** Stop talking and thinking right now, then listen (the loop carries on by itself). */
+  const interrupt = useCallback(() => {
+    turn.current++;
+    cancel();
+    stopSpeaking();
+    setCutIn(true);
+  }, [cancel]);
+
+  /* ---------- conversation loop (only ever one) ---------- */
+  const running = useRef(false);
   const run = useCallback(async () => {
+    if (running.current) return;
+    running.current = true;
     let misses = 0;
+    try {
     while (open.current) {
       setP("listening");
       setHeard("");
       const text = await listenOnce((t) => setHeard(t));
+      setCutIn(false);
       if (!open.current) break;
       if (!text) {
         if (++misses >= 3) {
@@ -41,32 +93,23 @@ export default function TalkMode({ ask, onClose, intro, firstAsk }: { ask: Ask; 
       }
       misses = 0;
       setHeard(text);
-      if (/^(goodbye|bye|stop listening|end (the )?call|that'?s all|thank you,? that'?s all)\b/i.test(text)) {
+      if (/^(goodbye|bye|end (the )?call|that'?s all|thank you,? that'?s all)\b/i.test(text)) {
         say("Goodbye, Sanjeev.");
         await spoken();
         onClose();
         return;
       }
-      setP("thinking");
-      setReply("");
-      let first = true;
-      try {
-        await ask(text, (d) => {
-          if (first) {
-            first = false;
-            setP("speaking");
-          }
-          feed(d);
-          setReply((r) => r + d);
-        });
-      } catch {
-        say("Sorry, I lost my connection for a moment.");
+      // "stop" / "wait" / "never mind" on their own: stay quiet and keep listening
+      if (/^(stop|wait|hold on|cancel|never ?mind|shut up|quiet|enough|okay stop)[.!]?$/i.test(text.trim())) {
+        setReply("");
+        continue;
       }
-      flush();
-      if (phaseRef.current !== "speaking") setP("speaking");
-      await spoken();
+      await answer(text);
     }
-  }, [ask, onClose]);
+    } finally {
+      running.current = false;
+    }
+  }, [answer, onClose]);
   const loop = useRef(run);
   useEffect(() => {
     loop.current = run;
@@ -76,34 +119,24 @@ export default function TalkMode({ ask, onClose, intro, firstAsk }: { ask: Ask; 
     open.current = true;
     warmVoice();
     startMeters();
+    void ensureMic(); // to hear Sanjeev talk over JARVIS
     const ears = earEngine();
     const h = new Date().getHours();
     const t = setTimeout(async () => {
       say(intro ?? `${h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening"}, Sanjeev. I'm listening.`);
       setP("speaking");
       await spoken();
-      if (open.current && firstAsk) {
-        // a call with an agenda (e.g. "your updates"): JARVIS speaks it first, then listens
-        setP("thinking");
-        setReply("");
-        let first = true;
-        await ask(firstAsk, (d) => {
-          if (first) {
-            first = false;
-            setP("speaking");
-          }
-          feed(d);
-          setReply((r) => r + d);
-        }).catch(() => say("I couldn't fetch that right now."));
-        flush();
-        await spoken();
-      }
+      // a call with an agenda (e.g. "your updates"): JARVIS speaks it first, then listens
+      if (open.current && firstAsk) await answer(firstAsk);
       if (open.current && ears !== "none") void loop.current();
       else setP("paused");
     }, 250);
     return () => {
       open.current = false;
       clearTimeout(t);
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- a plain counter, not a DOM node: bumping it here voids any answer still streaming
+      turn.current++;
+      cancel();
       stopListening();
       stopSpeaking();
       stopMeters();
@@ -112,13 +145,56 @@ export default function TalkMode({ ask, onClose, intro, firstAsk }: { ask: Ask; 
   }, []);
 
   const tapOrb = () => {
-    if (phaseRef.current === "speaking" || phaseRef.current === "thinking") {
-      stopSpeaking();
-      stopListening();
-      setTimeout(() => void loop.current(), 120);
-    } else if (phaseRef.current === "paused") void loop.current();
+    if (phaseRef.current === "speaking" || phaseRef.current === "thinking") interrupt();
+    else if (phaseRef.current === "paused") void loop.current();
     else if (phaseRef.current === "listening") stopListening();
   };
+
+  // keyboard: Space or Esc stops JARVIS mid-answer
+  useEffect(() => {
+    const k = (e: KeyboardEvent) => {
+      if ((e.key === " " || e.key === "Escape") && (phaseRef.current === "speaking" || phaseRef.current === "thinking")) {
+        e.preventDefault();
+        interrupt();
+      }
+    };
+    addEventListener("keydown", k);
+    return () => removeEventListener("keydown", k);
+  }, [interrupt]);
+
+  // barge-in: when Sanjeev starts talking over JARVIS, it stops and listens. The mic is echo-cancelled; the threshold
+  // also adapts to whatever of JARVIS's own voice still leaks in, so it doesn't interrupt itself.
+  useEffect(() => {
+    bargeRef.current = bargeIn;
+  }, [bargeIn]);
+  useEffect(() => {
+    let since = 0;
+    let echo = 0.05;
+    let loud = 0;
+    const iv = setInterval(() => {
+      if (phaseRef.current !== "speaking" || !bargeRef.current) {
+        since = 0;
+        loud = 0;
+        return;
+      }
+      since ||= performance.now();
+      const mic = levels.mic;
+      if (performance.now() - since < 700) {
+        echo = Math.max(echo, mic); // learn the echo floor while JARVIS starts speaking
+        return;
+      }
+      const limit = Math.max(0.2, echo * 2.2 + levels.out * 0.25);
+      loud = mic > limit ? loud + 1 : 0;
+      if (loud < 6) echo = echo * 0.97 + mic * 0.03;
+      if (loud >= 6) {
+        // ~300 ms of clear speech over JARVIS
+        loud = 0;
+        since = 0;
+        interrupt();
+      }
+    }, 50);
+    return () => clearInterval(iv);
+  }, [interrupt]);
 
   /* ---------- the reactor orb ---------- */
   useEffect(() => {
@@ -219,7 +295,7 @@ export default function TalkMode({ ask, onClose, intro, firstAsk }: { ask: Ask; 
     return () => cancelAnimationFrame(raf);
   }, []);
 
-  const label = { starting: "Connecting…", listening: "Listening", thinking: "Thinking", speaking: "Speaking · tap to interrupt", paused: "Tap the reactor to talk" }[phase];
+  const label = { starting: "Connecting…", listening: cutIn ? "Stopped · go ahead, I'm listening" : "Listening", thinking: "Thinking · tap to stop", speaking: bargeIn ? "Speaking · just talk to interrupt" : "Speaking · tap to interrupt", paused: "Tap the reactor to talk" }[phase];
 
   return (
     <div className={s.wrap} role="dialog" aria-label="Voice conversation with JARVIS">
@@ -243,7 +319,27 @@ export default function TalkMode({ ask, onClose, intro, firstAsk }: { ask: Ask; 
         {reply && <p className={s.reply}>{reply.replace(/```[\s\S]*?(```|$)/g, "[code on screen]").replace(/[*_#`]/g, "").slice(-420)}</p>}
         {note && <p className={s.note}>{note}</p>}
       </div>
-      <p className={s.hint}>Say “goodbye” to end · works best with headphones</p>
+      <div className={s.controls}>
+        {(phase === "speaking" || phase === "thinking") && (
+          <button type="button" className={s.stop} onClick={interrupt}>
+            ■ Stop
+          </button>
+        )}
+        <label className={s.toggle}>
+          <input
+            type="checkbox"
+            checked={bargeIn}
+            onChange={(e) => {
+              setBargeIn(e.target.checked);
+              try {
+                localStorage.setItem("jarvis-barge-in", e.target.checked ? "1" : "0");
+              } catch {}
+            }}
+          />
+          Interrupt by talking
+        </label>
+      </div>
+      <p className={s.hint}>Stop: talk over it, tap the orb, ■ Stop, or Space · then correct it · say “goodbye” to end</p>
     </div>
   );
 }

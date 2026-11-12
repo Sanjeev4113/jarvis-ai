@@ -16,6 +16,8 @@ export type Job = {
   url: string;
   description: string;
   posted?: string;
+  /** the board only gives the day ("Posted Today"), not the time */
+  postedDay?: boolean;
 };
 
 export const COMPANIES = {
@@ -264,9 +266,14 @@ export const WORKDAY = [
   { company: "Intel", host: "intel.wd1", tenant: "intel", site: "External" },
   { company: "Cisco", host: "cisco.wd5", tenant: "cisco", site: "Cisco_Careers" },
 ];
+/** Workday only says "Posted Today / Yesterday / N Days Ago": date it at the middle of that day (not "now"), so it
+ *  sorts honestly among posts with exact times. */
 function workdayPosted(s: string) {
   const days = /today/i.test(s) ? 0 : /yesterday/i.test(s) ? 1 : Number(s.match(/(\d+)\+?\s*days?/i)?.[1] ?? 30);
-  return new Date(Date.now() - days * 86_400_000).toISOString();
+  const now = Date.now();
+  const startToday = new Date(new Date().toISOString().slice(0, 10) + "T00:00:00Z").getTime();
+  const mid = days === 0 ? (startToday + now) / 2 : startToday - (days - 1) * 86_400_000 - 43_200_000;
+  return new Date(Math.min(now, mid)).toISOString();
 }
 async function workday(w: (typeof WORKDAY)[number]): Promise<Job[]> {
   type R = { total: number; jobPostings: { title: string; externalPath: string; locationsText: string; postedOn: string; bulletFields?: string[] }[] };
@@ -290,6 +297,7 @@ async function workday(w: (typeof WORKDAY)[number]): Promise<Job[]> {
           url: `https://${w.host}.myworkdayjobs.com/${w.site}${j.externalPath}`,
           description: "", // fetched on demand
           posted: workdayPosted(j.postedOn ?? ""),
+          postedDay: true,
         });
       if (ps.length < 20) break;
     }

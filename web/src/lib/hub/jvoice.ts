@@ -15,20 +15,54 @@ export type EarEngine = "browser" | "whisper" | "none";
 
 let ctx: AudioContext | null = null;
 let outAnalyser: AnalyserNode | null = null;
+let speech: GainNode | null = null; // every sentence passes through here (a talking face listens to it)
+let outDelay: DelayNode | null = null;
 function audio() {
   if (!ctx) {
     ctx = new AudioContext();
     outAnalyser = ctx.createAnalyser();
     outAnalyser.fftSize = 512;
     outAnalyser.connect(ctx.destination);
+    outDelay = ctx.createDelay(1);
+    outDelay.delayTime.value = 0;
+    outDelay.connect(outAnalyser);
+    speech = ctx.createGain();
+    speech.connect(outDelay);
   }
   if (ctx.state === "suspended") void ctx.resume();
   return ctx;
 }
+/** The voice's audio graph, for lip-sync: the context and the node all speech passes through. */
+export function speechTap() {
+  const c = audio();
+  return { ctx: c, node: speech! };
+}
+/** Hold what he hears back by `s` seconds (so a face analysing the speech in real time stays in sync). */
+export function setOutputDelay(sec: number) {
+  audio();
+  outDelay!.delayTime.value = Math.max(0, Math.min(1, sec));
+}
 
 let worker: Worker | null = null;
 let neural: "off" | "loading" | "ready" | "failed" = "off";
-const VOICE = "bm_george";
+const DEFAULT_VOICE = "bm_george"; // JARVIS: British male
+let VOICE = DEFAULT_VOICE;
+/** Speak with another Kokoro voice (e.g. an interviewer's); call with no argument to go back to JARVIS's. */
+export function setVoice(v?: string) {
+  VOICE = v || DEFAULT_VOICE;
+}
+/** Seconds between a sentence's audio arriving and it starting to play (a talking face uses it to prepare the lips). */
+let lead = 0.03;
+export const setLead = (s: number) => void (lead = Math.max(0.03, Math.min(1, s)));
+/** The audio clock every scheduled sentence is timed against. */
+export const audioClock = () => (ctx ? ctx.currentTime : 0);
+type PcmTap = (pcm: Float32Array, rate: number, startAt: number) => void;
+const pcmTaps = new Set<PcmTap>();
+/** Receive every sentence's audio and the exact time it will start playing (for lip-sync). */
+export function onPcm(f: PcmTap) {
+  pcmTaps.add(f);
+  return () => void pcmTaps.delete(f);
+}
 let nextId = 1;
 let nextPlay = 1;
 const arrived = new Map<number, Float32Array | null>();
@@ -75,9 +109,17 @@ export function warmVoice() {
   w.postMessage({ type: "load", device: "webgpu" });
 }
 
+const speakingSubs = new Set<(v: boolean) => void>();
 function setSpeaking(v: boolean) {
+  const changed = speakingNow !== v;
   speakingNow = v;
   if (!v) while (doneWaiters.length) doneWaiters.shift()!();
+  if (changed) for (const f of speakingSubs) f(v);
+}
+/** Follow "is JARVIS talking right now" (for a Stop button). Returns an unsubscribe function. */
+export function onSpeaking(f: (v: boolean) => void) {
+  speakingSubs.add(f);
+  return () => void speakingSubs.delete(f);
 }
 export const isSpeaking = () => speakingNow;
 /** Resolves when everything queued so far has been spoken. */
@@ -101,8 +143,9 @@ function schedule(pcm: Float32Array, rate: number) {
   buf.copyToChannel(new Float32Array(pcm), 0);
   const src = c.createBufferSource();
   src.buffer = buf;
-  src.connect(outAnalyser!);
-  const start = Math.max(c.currentTime + 0.03, playHead);
+  src.connect(speech!);
+  const start = Math.max(c.currentTime + lead, playHead);
+  for (const f of pcmTaps) f(pcm, rate, start);
   src.start(start);
   playHead = start + buf.duration + 0.12;
   live++;
@@ -224,6 +267,9 @@ async function micMeter() {
     micStream = null;
   }
 }
+
+/** Open the mic (echo-cancelled) so its level can be watched, e.g. to let Sanjeev talk over JARVIS. */
+export const ensureMic = () => micMeter();
 
 /** Update the mic/output levels each frame (call while talk mode is open). */
 export function startMeters() {
